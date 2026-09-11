@@ -27,13 +27,19 @@ class Spider(Spider):
         return "黄果短剧"
 
     def init(self, extend=""):
-        self.host = "https://14a.bhefwntk.cc"
+        # 多个备用域名，按顺序自动尝试
+        self.hosts = [
+            "https://14a.bhefwntk.cc",
+            "https://huangguo5.com",
+            "https://huangguoai.com",
+            "https://huangguoai.pages.dev",
+        ]
+        self.host = self.hosts[0]
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Accept-Encoding": "gzip, deflate, br",
-            "Referer": self.host + "/",
             "Connection": "keep-alive",
         }
         ext = extend or ""
@@ -46,25 +52,44 @@ class Spider(Spider):
             {"type_id": "ranks/hot", "type_name": "排行榜"},
         ]
 
-    # ---------- 基础工具 ----------
     def _get(self, url, referer=None, asjson=False):
         headers = dict(self.headers)
         if referer:
             headers["Referer"] = referer
+        else:
+            headers["Referer"] = self.host + "/"
+
+        # 如果是相对路径，补全当前 host
+        if url.startswith("/"):
+            url = self.host + url
+
         for i in range(3):
             try:
-                r = self.fetch(url, headers=headers, timeout=15, verify=False)
+                r = self.fetch(url, headers=headers, timeout=20, verify=False)
+                if r is None:
+                    continue
                 if not asjson:
-                    return r.text
-                try:
-                    return r.json()
-                except Exception:
-                    return {}
+                    text = r.text if hasattr(r, "text") else str(r)
+                    if text and len(text) > 500:
+                        return text
+                else:
+                    try:
+                        return r.json()
+                    except Exception:
+                        return {}
             except Exception:
-                if i == 2:
-                    break
                 time.sleep(1)
         return {} if asjson else ""
+
+    def _try_hosts(self, path):
+        """自动尝试多个域名，返回第一个成功的 HTML 和对应 host"""
+        for h in self.hosts:
+            self.host = h
+            url = h + path if path.startswith("/") else path
+            html = self._get(url)
+            if html and ("hg-drama-card" in html or "hg-rank-item" in html or "hg-web-detail" in html):
+                return html
+        return ""
 
     def _fix(self, u):
         if not u:
@@ -76,23 +101,23 @@ class Spider(Spider):
         return u
 
     def _img_src(self, u):
-        """剔除 CDN 防盗链的 auth_key 等查询参数, 得到不过期的稳定直链"""
         u = self._fix(u or "")
         if u.startswith("http") and "?" in u:
             u = re.sub(r'\?.*', '', u)
         return u
 
     def _proxy_pic(self, u):
-        """图片 URL 统一通过本地代理加载, 避免防盗链过期/内容类型/直连被墙"""
         u = self._img_src(u)
         if not u:
             return ""
         if self.pics_direct:
             return u
-        enc = quote(b64encode(u.encode("utf-8")).decode("utf-8"), safe="")
-        return f"{self.getProxyUrl()}&url={enc}&type=img"
+        try:
+            enc = quote(b64encode(u.encode("utf-8")).decode("utf-8"), safe="")
+            return f"{self.getProxyUrl()}&url={enc}&type=img"
+        except Exception:
+            return u
 
-    # 站点图片为 AES-128-CBC 加密字节, 密钥/IV 取自站点前端 crypto-worker.js
     _IMG_KEY = bytes([102, 53, 100, 57, 54, 53, 100, 102, 55, 53, 51, 51, 54, 50, 55, 48])
     _IMG_IV = bytes([57, 55, 98, 54, 48, 51, 57, 52, 97, 98, 99, 50, 102, 98, 101, 49])
 
@@ -103,44 +128,13 @@ class Spider(Spider):
             pt = _AES.new(self._IMG_KEY, _AES.MODE_CBC, self._IMG_IV).decrypt(raw)
         except Exception:
             return raw
-        # 解密后若不含图片特征说明源图并未加密, 原样返回
         if not (pt[:2] == b"\xff\xd8" or pt[:8] == b"\x89PNG\r\n\x1a\n"
                 or pt[:4] == b"RIFF" or pt[:6] in (b"GIF87a", b"GIF89a")):
             return raw
         pad = pt[-1]
         if 0 < pad <= 16 and pt[-pad:] == bytes([pad]) * pad:
             pt = pt[:-pad]
-        if pt[:2] == b"\xff\xd8":
-            i = pt.rfind(b"\xff\xd9")
-            if i >= 0:
-                pt = pt[:i + 2]
-        elif pt[:8] == b"\x89PNG\r\n\x1a\n":
-            i = pt.rfind(b"IEND")
-            if i >= 0:
-                pt = pt[:i + 8]
         return pt
-
-    def _img_ct(self, data):
-        if data[:8] == b"\x89PNG\r\n\x1a\n":
-            return "image/png"
-        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-            return "image/webp"
-        if data[:6] in (b"GIF87a", b"GIF89a"):
-            return "image/gif"
-        return "image/jpeg"
-
-    def _get_bin(self, url):
-        headers = dict(self.headers)
-        for i in range(3):
-            try:
-                r = self.fetch(url, headers=headers, timeout=15, verify=False)
-                if r.status_code == 200:
-                    return r.content
-            except Exception:
-                if i == 2:
-                    break
-                time.sleep(1)
-        return None
 
     def _card(self, card):
         a = card.xpath('.//a[contains(@href,"/detail/")]')
@@ -150,7 +144,7 @@ class Spider(Spider):
         m = re.search(r'/detail/(\d+)/', a.get("href", ""))
         if not m:
             return None
-        img = (card.xpath('.//img/@data-src') or card.xpath('.//img/@src') or ["", ""])[0]
+        img = (card.xpath('.//img/@data-src') or card.xpath('.//img/@src') or [""])[0]
         title = "".join(card.xpath('.//*[contains(@class,"hg-drama-card__title")]//text()')).strip()
         if not title:
             title = a.get("title", "").strip()
@@ -172,14 +166,19 @@ class Spider(Spider):
     def _cards(self, html, all_grids=False):
         if not html:
             return []
-        tree = etree.HTML(html)
+        try:
+            tree = etree.HTML(html)
+        except Exception:
+            return []
         if all_grids:
             nodes = []
             for g in tree.xpath('//*[contains(@class,"hg-card-grid")]'):
                 nodes.extend(g.xpath('.//*[contains(@class,"hg-drama-card")]'))
+            if not nodes:
+                nodes = tree.xpath('//*[contains(@class,"hg-drama-card")]')
         else:
             grids = tree.xpath('//*[contains(@class,"hg-card-grid")]')
-            nodes = grids[0].xpath('.//*[contains(@class,"hg-drama-card")]') if grids else []
+            nodes = grids[0].xpath('.//*[contains(@class,"hg-drama-card")]') if grids else tree.xpath('//*[contains(@class,"hg-drama-card")]')
         out, seen = [], set()
         for card in nodes:
             try:
@@ -195,7 +194,10 @@ class Spider(Spider):
     def _rank_items(self, html):
         if not html:
             return []
-        tree = etree.HTML(html)
+        try:
+            tree = etree.HTML(html)
+        except Exception:
+            return []
         lists = tree.xpath('//*[contains(@class,"hg-rank-list")]')
         nodes = lists[0].xpath('.//*[contains(@class,"hg-rank-item")]') if lists else tree.xpath('//*[contains(@class,"hg-rank-item")]')
         out, seen = [], set()
@@ -208,7 +210,7 @@ class Spider(Spider):
                 if not m or m.group(1) in seen:
                     continue
                 seen.add(m.group(1))
-                img = (item.xpath('.//img/@data-src') or item.xpath('.//img/@src') or ["", ""])[0]
+                img = (item.xpath('.//img/@data-src') or item.xpath('.//img/@src') or [""])[0]
                 title = "".join(item.xpath('.//*[contains(@class,"hg-rank-item__title")]//text()')).strip()
                 if not title:
                     title = a[0].get("title", "").strip()
@@ -228,21 +230,23 @@ class Spider(Spider):
         m = re.search(r'data-panel-total="(\d+)"', html or "")
         return int(m.group(1)) if m else 0
 
-    # ---------- 接口 ----------
     def homeContent(self, filter):
-        return {"class": self.categories, "list": self._cards(self._get(self.host), all_grids=True), "filters": {}}
+        html = self._try_hosts("/")
+        return {"class": self.categories, "list": self._cards(html, all_grids=True), "filters": {}}
 
     def homeVideoContent(self):
-        return {"list": self._cards(self._get(self.host), all_grids=True)}
+        html = self._try_hosts("/")
+        return {"list": self._cards(html, all_grids=True)}
 
     def categoryContent(self, tid, pg, filter, extend):
         pg = int(pg or 1)
         tid = str(tid).strip("/")
         if "rank" in tid:
-            url = f"{self.host}/{tid}/" if pg == 1 else f"{self.host}/{tid}/{pg}/"
-            return {"page": pg, "pagecount": 9999, "limit": 20, "total": 99999, "list": self._rank_items(self._get(url))}
-        url = f"{self.host}/{tid}/" if pg == 1 else f"{self.host}/{tid}/{pg}/"
-        html = self._get(url)
+            path = f"/{tid}/" if pg == 1 else f"/{tid}/{pg}/"
+            html = self._try_hosts(path)
+            return {"page": pg, "pagecount": 9999, "limit": 20, "total": 99999, "list": self._rank_items(html)}
+        path = f"/{tid}/" if pg == 1 else f"/{tid}/{pg}/"
+        html = self._try_hosts(path)
         cards = self._cards(html)
         total = self._panel_total(html)
         pagecount = max(1, (total + 23) // 24) if total else 9999
@@ -250,11 +254,14 @@ class Spider(Spider):
 
     def detailContent(self, ids):
         vid = str(ids[0])
-        html = self._get(f"{self.host}/detail/{vid}/")
+        html = self._try_hosts(f"/detail/{vid}/")
         result = {"list": []}
         if not html:
             return result
-        tree = etree.HTML(html)
+        try:
+            tree = etree.HTML(html)
+        except Exception:
+            return result
         name = "".join(tree.xpath('//h1/text()')).strip()
         if not name:
             return result
@@ -265,7 +272,6 @@ class Spider(Spider):
         desc = "".join(tree.xpath('//*[contains(@class,"hg-web-detail__desc")]/text()')).strip()
         remarks = "".join(tree.xpath('//*[contains(@class,"hg-web-detail__poster")]//*[contains(@class,"hg-web-detail__episode")]//text()')).strip()
         score = "".join(tree.xpath('//*[contains(@class,"hg-web-detail__score")]//text()')).strip()
-        meta = "".join(tree.xpath('//*[contains(@class,"hg-web-detail__meta")]/span[not(contains(@class,"score"))]/text()')).strip()
         eps = []
         for a in tree.xpath('//*[contains(@class,"hg-web-detail__ep-grid")]//a'):
             href = a.get("href", "")
@@ -292,18 +298,12 @@ class Spider(Spider):
             info["vod_remarks"] = remarks
         elif score:
             info["vod_remarks"] = f"{score}分"
-        tags = [t.strip() for t in tree.xpath('//*[contains(@class,"hg-web-detail__tags")]//*[contains(@class,"hg-tag")]//text()') if t.strip()]
-        if tags:
-            info["vod_class"] = ",".join(tags)
-        ym = re.search(r'(20\d{2})-\d{2}-\d{2}', meta or "")
-        if ym:
-            info["vod_year"] = ym.group(1)
         result["list"].append(info)
         return result
 
     def searchContent(self, key, quick, pg="1"):
-        url = f"{self.host}/search/video/{quote(key)}/"
-        return {"list": self._cards(self._get(url)), "page": int(pg or 1)}
+        html = self._try_hosts(f"/search/video/{quote(key)}/")
+        return {"list": self._cards(html), "page": int(pg or 1)}
 
     def playerContent(self, flag, id, vipFlags):
         url = self._fix(id)
@@ -317,7 +317,7 @@ class Spider(Spider):
                 except Exception:
                     data = {}
                 if isinstance(data, dict):
-                    em = re.search(r'/ep-(\d+)/', url)
+                    em = re.search(r'/ep-(\d+)/', url) or re.search(r'/(\d+)/?$', url)
                     ep = str(em.group(1)) if em else "1"
                     srcs = data.get("epPlaySrcs") or {}
                     play = srcs.get(ep) or data.get("videoSrc") or ""
@@ -327,32 +327,19 @@ class Spider(Spider):
                 mm2 = re.search(r'(https?://[^\s"\']+)', play)
                 play = mm2.group(1) if mm2 else ""
         header = {
-            "User-Agent": self.headers.get("User-Agent", "Mozilla/5.0"),
+            "User-Agent": self.headers.get("User-Agent"),
             "Referer": self.host + "/",
         }
         return {"parse": 0, "url": play, "header": header}
 
     def localProxy(self, param):
-        try:
-            if param and param.get("type") == "img":
-                raw = param.get("url", "") or ""
-                if raw:
-                    url = b64decode(unquote(raw).encode("utf-8")).decode("utf-8")
-                    url = self._img_src(url)
-                    if url:
-                        raw = self._get_bin(url)
-                        if raw:
-                            data = self._decrypt_img(raw)
-                            return [200, self._img_ct(data), data]
-        except Exception:
-            pass
         return None
 
     def isVideoFormat(self, url):
-        return ".m3u8" in (url or "") or ".mp4" in (url or "")
+        return True
 
     def manualVideoCheck(self):
-        return False
+        pass
 
     def destroy(self):
-        return None
+        pass
