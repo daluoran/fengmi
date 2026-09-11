@@ -160,15 +160,12 @@ class Spider(Spider):
 
         # 封面
         pic = ""
-        pm = re.search(r'hg-web-detail__poster[\s\S]{0,500}?(?:data-src|src)=["\']([^"\']+)["\']', html)
-        if pm:
-            pic = self._proxy_pic(pm.group(1))
-        if not pic or "placeholder" in pic:
-            # 备用 og:image
-            om = re.search(r'<meta[^>]*property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']', html)
-            if om:
-                pic = self._proxy_pic(om.group(1))
-
+                pm = re.search(r'data-src=["\'](https?://[^"\']+)["\']', block) or re.search(r'src=["\'](https?://[^"\']+)["\']', block)
+                if pm:
+                    pic = pm.group(1)
+                    if "?" in pic:
+                        pic = pic.split("?")[0]
+                    pic = self._fix(pic)
         # ★简介：优先 og:description / meta description（最稳）
         desc = ""
         for pat in [
