@@ -88,54 +88,6 @@ class Spider(Spider):
         except Exception:
             return u
 
-    def _parse_cards(self, html):
-        if not html:
-            return []
-        items = []
-        seen = set()
-        blocks = re.split(r'class="[^"]*hg-drama-card[^"]*"', html)[1:]
-        for block in blocks:
-            try:
-                m = re.search(r'href=["\'](/detail/(\d+)/)["\']', block)
-                if not m:
-                    continue
-                vid = m.group(2)
-                if vid in seen:
-                    continue
-                seen.add(vid)
-
-                title = ""
-                tm = re.search(r'hg-drama-card__title[^>]*>(.*?)</', block, re.S)
-                if tm:
-                    title = re.sub(r'<[^>]+>', '', tm.group(1)).strip()
-                if not title:
-                    tm = re.search(r'title=["\']([^"\']+)["\']', block)
-                    title = tm.group(1).strip() if tm else "未知"
-
-                pic = ""
-                pm = re.search(r'data-src=["\']([^"\']+)["\']', block) or re.search(r'src=["\']([^"\']+)["\']', block)
-                if pm:
-                    pic = self._proxy_pic(pm.group(1))
-
-                rem = ""
-                rm = re.search(r'hg-drama-card__episode[^>]*>(.*?)</', block, re.S)
-                if rm:
-                    rem = re.sub(r'<[^>]+>', '', rm.group(1)).strip()
-                sm = re.search(r'hg-drama-card__score[^>]*>(.*?)</', block, re.S)
-                if sm:
-                    score = re.sub(r'<[^>]+>', '', sm.group(1)).strip()
-                    rem = f"{rem} · {score}" if rem else score
-
-                items.append({
-                    "vod_id": vid,
-                    "vod_name": title,
-                    "vod_pic": pic,
-                    "vod_remarks": rem,
-                })
-            except Exception:
-                continue
-        return items
-
     def _parse_rank(self, html):
         if not html:
             return []
