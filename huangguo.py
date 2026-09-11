@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
-# 黄果短剧 - 封面+简介最终修复版
+# 黄果短剧 - 完整可用版（封面去auth_key + 简介修复）
 import re
 import sys
 import json
 import time
-from base64 import b64encode, b64decode
-from urllib.parse import quote, unquote
+from urllib.parse import quote
 
 sys.path.append('..')
 from base.spider import Spider
@@ -23,13 +22,10 @@ class Spider(Spider):
         self.host = self.hosts[0]
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9",
             "Connection": "keep-alive",
         }
-        # 是否强制直链图片（一般不建议，容易没封面）
-        ext = extend or ""
-        self.pics_direct = "direct=1" in str(ext)
         self.categories = [
             {"type_id": "ai-duanju", "type_name": "AI成人短剧"},
             {"type_id": "ai-manju", "type_name": "AI成人漫剧"},
@@ -41,17 +37,17 @@ class Spider(Spider):
     def _fetch(self, url, referer=None):
         headers = dict(self.headers)
         headers["Referer"] = referer or (self.host + "/")
-        for _ in range(3):
+        for _ in range(2):
             try:
-                r = self.fetch(url, headers=headers, timeout=20, verify=False)
+                r = self.fetch(url, headers=headers, timeout=18, verify=False)
                 if r is None:
-                    time.sleep(0.6)
+                    time.sleep(0.5)
                     continue
                 text = r.text if hasattr(r, "text") else str(r)
-                if text and len(text) > 300:
+                if text and len(text) > 400:
                     return text
             except Exception:
-                time.sleep(0.6)
+                time.sleep(0.5)
         return ""
 
     def _get_html(self, path):
@@ -59,7 +55,7 @@ class Spider(Spider):
             self.host = h
             url = path if path.startswith("http") else (h + path)
             html = self._fetch(url)
-            if html and ("hg-drama-card" in html or "detail/" in html or "hg-web-detail" in html or "og:description" in html):
+            if html and ("hg-drama-card" in html or "/detail/" in html):
                 return html
         return ""
 
@@ -72,47 +68,111 @@ class Spider(Spider):
             return self.host + u
         return u
 
-    def _proxy_pic(self, u):
-        """通过本地代理加载图片，解决防盗链/过期问题"""
-        u = self._fix(u or "")
-        if not u:
+    def _clean(self, s):
+        if not s:
             return ""
-        if self.pics_direct:
-            # 直链模式：去掉 auth_key 有时反而更稳
-            if "?" in u:
-                u = u.split("?")[0]
-            return u
-        try:
-            enc = quote(b64encode(u.encode("utf-8")).decode("utf-8"), safe="")
-            return f"{self.getProxyUrl()}&url={enc}&type=img"
-        except Exception:
-            return u
+        s = re.sub(r'<[^>]+>', '', s)
+        s = re.sub(r'\s+', ' ', s).strip()
+        return s
+
+    def _pic(self, raw):
+        """去掉 auth_key，返回干净直链"""
+        if not raw:
+            return ""
+        u = self._fix(raw)
+        if "?" in u:
+            u = u.split("?")[0]
+        if "placeholder" in u or "data:image" in u:
+            return ""
+        return u
+
+    def _parse_cards(self, html):
+        if not html:
+            return []
+        items = []
+        seen = set()
+        blocks = re.split(r'hg-drama-card', html)[1:]
+        for block in blocks:
+            try:
+                m = re.search(r'/detail/(\d+)/', block)
+                if not m:
+                    continue
+                vid = m.group(1)
+                if vid in seen:
+                    continue
+                seen.add(vid)
+
+                title = ""
+                for pat in [
+                    r'hg-drama-card__title[^>]*>([\s\S]*?)</',
+                    r'title=["\']([^"\']{2,80})["\']',
+                    r'alt=["\']([^"\']{2,80})["\']',
+                ]:
+                    tm = re.search(pat, block)
+                    if tm:
+                        title = self._clean(tm.group(1))
+                        if title and title not in ("未知", "null", "undefined"):
+                            break
+                if not title:
+                    title = f"剧集{vid}"
+
+                pic = ""
+                pm = re.search(r'data-src=["\'](https?://[^"\']+)["\']', block)
+                if not pm:
+                    pm = re.search(r'src=["\'](https?://[^"\']+\.(?:jpg|jpeg|png|webp)[^"\']*)["\']', block, re.I)
+                if pm:
+                    pic = self._pic(pm.group(1))
+
+                rem = ""
+                rm = re.search(r'hg-drama-card__episode[^>]*>([\s\S]*?)</', block)
+                if rm:
+                    rem = self._clean(rm.group(1))
+                sm = re.search(r'hg-drama-card__score[^>]*>([\s\S]*?)</', block)
+                if sm:
+                    score = self._clean(sm.group(1))
+                    rem = f"{rem} · {score}" if rem else score
+
+                items.append({
+                    "vod_id": vid,
+                    "vod_name": title,
+                    "vod_pic": pic,
+                    "vod_remarks": rem,
+                })
+            except Exception:
+                continue
+        return items
 
     def _parse_rank(self, html):
         if not html:
             return []
         items = []
         seen = set()
-        blocks = re.split(r'class="[^"]*hg-rank-item[^"]*"', html)[1:]
+        blocks = re.split(r'hg-rank-item', html)[1:]
         for block in blocks:
             try:
-                m = re.search(r'href=["\'](/detail/(\d+)/)["\']', block)
+                m = re.search(r'/detail/(\d+)/', block)
                 if not m:
                     continue
-                vid = m.group(2)
+                vid = m.group(1)
                 if vid in seen:
                     continue
                 seen.add(vid)
                 title = ""
-                tm = re.search(r'hg-rank-item__title[^>]*>(.*?)</', block, re.S)
-                if tm:
-                    title = re.sub(r'<[^>]+>', '', tm.group(1)).strip()
+                for pat in [
+                    r'hg-rank-item__title[^>]*>([\s\S]*?)</',
+                    r'title=["\']([^"\']{2,80})["\']',
+                ]:
+                    tm = re.search(pat, block)
+                    if tm:
+                        title = self._clean(tm.group(1))
+                        if title:
+                            break
                 if not title:
                     continue
                 pic = ""
-                pm = re.search(r'data-src=["\']([^"\']+)["\']', block) or re.search(r'src=["\']([^"\']+)["\']', block)
+                pm = re.search(r'data-src=["\'](https?://[^"\']+)["\']', block) or re.search(r'src=["\'](https?://[^"\']+)["\']', block)
                 if pm:
-                    pic = self._proxy_pic(pm.group(1))
+                    pic = self._pic(pm.group(1))
                 items.append({
                     "vod_id": vid,
                     "vod_name": title,
@@ -150,38 +210,37 @@ class Spider(Spider):
         if not html:
             return result
 
-        # 标题
         name = ""
-        m = re.search(r'<h1[^>]*>(.*?)</h1>', html, re.S)
+        m = re.search(r'<h1[^>]*>([\s\S]*?)</h1>', html)
         if m:
-            name = re.sub(r'<[^>]+>', '', m.group(1)).strip()
+            name = self._clean(m.group(1))
         if not name:
             return result
 
-        # 封面
         pic = ""
-                pm = re.search(r'data-src=["\'](https?://[^"\']+)["\']', block) or re.search(r'src=["\'](https?://[^"\']+)["\']', block)
-                if pm:
-                    pic = pm.group(1)
-                    if "?" in pic:
-                        pic = pic.split("?")[0]
-                    pic = self._fix(pic)
-        # ★简介：优先 og:description / meta description（最稳）
+        for pat in [
+            r'property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']',
+            r'hg-web-detail__poster[\s\S]{0,600}?(?:data-src|src)=["\']([^"\']+)["\']',
+        ]:
+            pm = re.search(pat, html, re.I)
+            if pm:
+                pic = self._pic(pm.group(1))
+                if pic:
+                    break
+
         desc = ""
         for pat in [
-            r'<meta[^>]*property=["\']og:description["\'][^>]*content=["\']([^"\']+)["\']',
-            r'<meta[^>]*name=["\']description["\'][^>]*content=["\']([^"\']+)["\']',
-            r'class="[^"]*hg-web-detail__desc[^"]*"[^>]*>([\s\S]*?)</div>',
+            r'property=["\']og:description["\'][^>]*content=["\']([^"\']+)["\']',
+            r'name=["\']description["\'][^>]*content=["\']([^"\']+)["\']',
         ]:
             dm = re.search(pat, html, re.I)
             if dm:
-                desc = re.sub(r'<[^>]+>', '', dm.group(1)).strip()
-                if len(desc) > 15:
+                desc = self._clean(dm.group(1))
+                if len(desc) > 10:
                     break
 
-        # 分集
         eps = []
-        for am in re.finditer(r'<a[^>]*href=["\']([^"\']+)["\'][^>]*data-ep-id=["\']?(\d+)["\']?', html):
+        for am in re.finditer(r'<a[^>]*href=["\']([^"\']+)["\'][^>]*data-ep-id=["\']?(\d+)', html):
             href = self._fix(am.group(1))
             eid = am.group(2)
             eps.append(f"第{eid}集${href}")
@@ -192,20 +251,18 @@ class Spider(Spider):
         if not eps:
             return result
 
-        info = {
+        result["list"].append({
             "vod_id": vid,
             "vod_name": name,
             "vod_pic": pic,
             "vod_play_from": "黄果短剧",
             "vod_play_url": "#".join(eps),
             "vod_content": desc,
-        }
-        result["list"].append(info)
+        })
         return result
 
     def searchContent(self, key, quick, pg="1"):
-        from urllib.parse import quote as q
-        html = self._get_html(f"/search/video/{q(key)}/")
+        html = self._get_html(f"/search/video/{quote(key)}/")
         return {"list": self._parse_cards(html), "page": int(pg or 1)}
 
     def playerContent(self, flag, id, vipFlags):
@@ -238,35 +295,7 @@ class Spider(Spider):
         }
 
     def localProxy(self, param):
-        """图片代理：带正确 Referer 拉取封面"""
-        try:
-            url = param.get("url") or ""
-            if not url:
-                return [404, "text/plain", b""]
-            # base64 解码
-            try:
-                url = b64decode(unquote(url)).decode("utf-8")
-            except Exception:
-                pass
-            headers = {
-                "User-Agent": self.headers["User-Agent"],
-                "Referer": self.host + "/",
-                "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
-            }
-            r = self.fetch(url, headers=headers, timeout=15, verify=False)
-            if r is None:
-                return [404, "text/plain", b""]
-            content = r.content if hasattr(r, "content") else b""
-            ctype = "image/jpeg"
-            if content[:8] == b"\x89PNG\r\n\x1a\n":
-                ctype = "image/png"
-            elif content[:4] == b"RIFF":
-                ctype = "image/webp"
-            elif content[:6] in (b"GIF87a", b"GIF89a"):
-                ctype = "image/gif"
-            return [200, ctype, content]
-        except Exception:
-            return [404, "text/plain", b""]
+        return None
 
     def isVideoFormat(self, url):
         return True
