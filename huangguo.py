@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 黄果短剧 - 封面AES解密最终版
+# 黄果短剧 - 标题修复 + 封面仍走解密代理
 import re
 import sys
 import json
@@ -39,7 +39,6 @@ class Spider(Spider):
             {"type_id": "ai-mogai", "type_name": "AI魔改"},
             {"type_id": "ranks/hot", "type_name": "排行榜"},
         ]
-        # 图片AES密钥（站点前端 crypto-worker.js）
         self._IMG_KEY = bytes([102, 53, 100, 57, 54, 53, 100, 102, 55, 53, 51, 51, 54, 50, 55, 48])
         self._IMG_IV = bytes([57, 55, 98, 54, 48, 51, 57, 52, 97, 98, 99, 50, 102, 98, 101, 49])
 
@@ -60,9 +59,11 @@ class Spider(Spider):
         return ""
 
     def _get_bin(self, url):
-        headers = dict(self.headers)
-        headers["Referer"] = self.host + "/"
-        headers["Accept"] = "image/webp,image/apng,image/*,*/*;q=0.8"
+        headers = {
+            "User-Agent": self.headers["User-Agent"],
+            "Referer": self.host + "/",
+            "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+        }
         for _ in range(2):
             try:
                 r = self.fetch(url, headers=headers, timeout=15, verify=False)
@@ -72,7 +73,7 @@ class Spider(Spider):
                 if content and len(content) > 100:
                     return content
             except Exception:
-                time.sleep(0.4)
+                time.sleep(0.3)
         return None
 
     def _get_html(self, path):
@@ -80,7 +81,7 @@ class Spider(Spider):
             self.host = h
             url = path if path.startswith("http") else (h + path)
             html = self._fetch(url)
-            if html and ("hg-drama-card" in html or "/detail/" in html):
+            if html and ("/detail/" in html):
                 return html
         return ""
 
@@ -96,20 +97,15 @@ class Spider(Spider):
     def _clean(self, s):
         if not s:
             return ""
-        s = re.sub(r'<[^>]+>', '', s)
-        s = re.sub(r'\s+', ' ', s).strip()
-        return s
+        return re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', s)).strip()
 
     def _decrypt_img(self, raw):
-        if not raw or _AES is None:
-            return raw
-        if len(raw) % 16 != 0:
+        if not raw or _AES is None or len(raw) % 16 != 0:
             return raw
         try:
             pt = _AES.new(self._IMG_KEY, _AES.MODE_CBC, self._IMG_IV).decrypt(raw)
         except Exception:
             return raw
-        # 校验是否解密成图片
         if not (pt[:2] == b"\xff\xd8" or pt[:8] == b"\x89PNG\r\n\x1a\n"
                 or pt[:4] == b"RIFF" or pt[:6] in (b"GIF87a", b"GIF89a")):
             return raw
@@ -119,11 +115,9 @@ class Spider(Spider):
         return pt
 
     def _proxy_pic(self, u):
-        """走本地代理 + AES解密"""
         u = self._fix(u or "")
         if not u or "placeholder" in u or "data:image" in u:
             return ""
-        # 保留完整url（含auth_key更稳）
         try:
             enc = quote(b64encode(u.encode("utf-8")).decode("utf-8"), safe="")
             return f"{self.getProxyUrl()}&url={enc}&type=img"
@@ -131,101 +125,64 @@ class Spider(Spider):
             return u
 
     def _parse_cards(self, html):
+        """只解析真正的 hg-drama-card，跳过热搜/广告链接"""
         if not html:
             return []
         items = []
         seen = set()
-        blocks = re.split(r'hg-drama-card', html)[1:]
-        for block in blocks:
-            try:
-                m = re.search(r'/detail/(\d+)/', block)
-                if not m:
-                    continue
-                vid = m.group(1)
-                if vid in seen:
-                    continue
-                seen.add(vid)
 
-                title = ""
-                for pat in [
-                    r'hg-drama-card__title[^>]*>([\s\S]*?)</',
-                    r'title=["\']([^"\']{2,80})["\']',
-                    r'alt=["\']([^"\']{2,80})["\']',
-                ]:
-                    tm = re.search(pat, block)
-                    if tm:
-                        title = self._clean(tm.group(1))
-                        if title and title not in ("未知", "null", "undefined"):
-                            break
-                if not title:
-                    title = f"剧集{vid}"
+        # 按真正的卡片块切割（带 class 的 div）
+        for m in re.finditer(r'<div class="hg-drama-card"[^>]*>', html):
+            start = m.start()
+            # 取卡片后约 1200 字符作为上下文
+            chunk = html[start:start + 1200]
 
-                pic = ""
-                pm = re.search(r'data-src=["\'](https?://[^"\']+)["\']', block)
-                if not pm:
-                    pm = re.search(r'src=["\'](https?://[^"\']+\.(?:jpg|jpeg|png|webp)[^"\']*)["\']', block, re.I)
-                if pm:
-                    pic = self._proxy_pic(pm.group(1))
-
-                rem = ""
-                rm = re.search(r'hg-drama-card__episode[^>]*>([\s\S]*?)</', block)
-                if rm:
-                    rem = self._clean(rm.group(1))
-                sm = re.search(r'hg-drama-card__score[^>]*>([\s\S]*?)</', block)
-                if sm:
-                    score = self._clean(sm.group(1))
-                    rem = f"{rem} · {score}" if rem else score
-
-                items.append({
-                    "vod_id": vid,
-                    "vod_name": title,
-                    "vod_pic": pic,
-                    "vod_remarks": rem,
-                })
-            except Exception:
+            mid = re.search(r'/detail/(\d+)/', chunk)
+            if not mid:
                 continue
+            vid = mid.group(1)
+            if vid in seen:
+                continue
+            seen.add(vid)
+
+            # 标题：alt > title 链接文字
+            title = ""
+            am = re.search(r'alt=["\']([^"\']{1,80})["\']', chunk)
+            if am:
+                title = self._clean(am.group(1))
+            if not title:
+                tm = re.search(r'hg-drama-card__title[^>]*>\s*<a[^>]*>([^<]+)</a>', chunk)
+                if tm:
+                    title = self._clean(tm.group(1))
+            if not title:
+                continue  # 没有标题的直接跳过，不再生成「剧集xxx」
+
+            # 封面
+            pic = ""
+            pm = re.search(r'data-src=["\'](https?://[^"\']+)["\']', chunk)
+            if pm:
+                pic = self._proxy_pic(pm.group(1))
+
+            # 备注
+            rem = ""
+            rm = re.search(r'hg-drama-card__episode[^>]*>[\s\S]*?((?:更新至|全)\d+集)', chunk)
+            if rm:
+                rem = rm.group(1)
+            sm = re.search(r'hg-drama-card__score[^>]*>([\d.]+分?)', chunk)
+            if sm:
+                score = sm.group(1)
+                rem = f"{rem} · {score}" if rem else score
+
+            items.append({
+                "vod_id": vid,
+                "vod_name": title,
+                "vod_pic": pic,
+                "vod_remarks": rem,
+            })
         return items
 
     def _parse_rank(self, html):
-        if not html:
-            return []
-        items = []
-        seen = set()
-        blocks = re.split(r'hg-rank-item', html)[1:]
-        for block in blocks:
-            try:
-                m = re.search(r'/detail/(\d+)/', block)
-                if not m:
-                    continue
-                vid = m.group(1)
-                if vid in seen:
-                    continue
-                seen.add(vid)
-                title = ""
-                for pat in [
-                    r'hg-rank-item__title[^>]*>([\s\S]*?)</',
-                    r'title=["\']([^"\']{2,80})["\']',
-                ]:
-                    tm = re.search(pat, block)
-                    if tm:
-                        title = self._clean(tm.group(1))
-                        if title:
-                            break
-                if not title:
-                    continue
-                pic = ""
-                pm = re.search(r'data-src=["\'](https?://[^"\']+)["\']', block) or re.search(r'src=["\'](https?://[^"\']+)["\']', block)
-                if pm:
-                    pic = self._proxy_pic(pm.group(1))
-                items.append({
-                    "vod_id": vid,
-                    "vod_name": title,
-                    "vod_pic": pic,
-                    "vod_remarks": "",
-                })
-            except Exception:
-                continue
-        return items
+        return self._parse_cards(html)
 
     def homeContent(self, filter):
         html = self._get_html("/")
@@ -238,10 +195,6 @@ class Spider(Spider):
     def categoryContent(self, tid, pg, filter, extend):
         pg = int(pg or 1)
         tid = str(tid).strip("/")
-        if "rank" in tid:
-            path = f"/{tid}/" if pg == 1 else f"/{tid}/{pg}/"
-            html = self._get_html(path)
-            return {"page": pg, "pagecount": 9999, "limit": 20, "total": 99999, "list": self._parse_rank(html)}
         path = f"/{tid}/" if pg == 1 else f"/{tid}/{pg}/"
         html = self._get_html(path)
         cards = self._parse_cards(html)
@@ -264,7 +217,7 @@ class Spider(Spider):
         pic = ""
         for pat in [
             r'property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']',
-            r'hg-web-detail__poster[\s\S]{0,600}?(?:data-src|src)=["\']([^"\']+)["\']',
+            r'data-src=["\'](https?://pic\.[^"\']+)["\']',
         ]:
             pm = re.search(pat, html, re.I)
             if pm:
@@ -339,7 +292,6 @@ class Spider(Spider):
         }
 
     def localProxy(self, param):
-        """图片代理：下载 + AES解密后返回真正图片"""
         try:
             url = param.get("url") or ""
             if not url:
@@ -358,8 +310,6 @@ class Spider(Spider):
                 ctype = "image/jpeg"
             elif data[:4] == b"RIFF":
                 ctype = "image/webp"
-            elif data[:6] in (b"GIF87a", b"GIF89a"):
-                ctype = "image/gif"
             else:
                 ctype = "image/jpeg"
             return [200, ctype, data]
