@@ -4,7 +4,7 @@
       "key": "py_huangguo",
       "name": "黄果短剧[py]",
       "type": 3,
-      "api": "https://gh-proxy.com/https://raw.githubusercontent.com/daluoran/fengmi/main/huangguo.py",
+      "api": "https://gh-proxy.com/https://raw.githubusercontent.com/daluoran/fengmi/refs/heads/main/huangguo.py",
       "searchable": 1,
       "quickSearch": 1,
       "filterable": 0,
