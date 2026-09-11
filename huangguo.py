@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
-# 黄果短剧 - 蜂蜜影视兼容加强版
+# 黄果短剧 - 蜂蜜影视最终修复版（有封面）
 import re
 import sys
 import json
 import time
-from base64 import b64encode
 from urllib.parse import quote
 
 sys.path.append('..')
@@ -70,16 +69,13 @@ class Spider(Spider):
         return u
 
     def _parse_cards(self, html):
-        """纯正则解析，不依赖 lxml"""
         if not html:
             return []
         items = []
         seen = set()
-        # 按卡片块切割
         blocks = re.split(r'class="[^"]*hg-drama-card[^"]*"', html)[1:]
         for block in blocks:
             try:
-                # 详情链接
                 m = re.search(r'href=["\'](/detail/(\d+)/)["\']', block)
                 if not m:
                     continue
@@ -88,7 +84,6 @@ class Spider(Spider):
                     continue
                 seen.add(vid)
 
-                # 标题
                 title = ""
                 tm = re.search(r'hg-drama-card__title[^>]*>(.*?)</', block, re.S)
                 if tm:
@@ -97,13 +92,12 @@ class Spider(Spider):
                     tm = re.search(r'title=["\']([^"\']+)["\']', block)
                     title = tm.group(1).strip() if tm else "未知"
 
-                # 图片
+                # ★关键：保留完整图片地址（含 auth_key）
                 pic = ""
                 pm = re.search(r'data-src=["\']([^"\']+)["\']', block) or re.search(r'src=["\']([^"\']+)["\']', block)
                 if pm:
-                    pic = self._fix(pm.group(1).split("?")[0])
+                    pic = self._fix(pm.group(1))   # 不再去掉 ?auth_key
 
-                # 备注
                 rem = ""
                 rm = re.search(r'hg-drama-card__episode[^>]*>(.*?)</', block, re.S)
                 if rm:
@@ -147,7 +141,7 @@ class Spider(Spider):
                 pic = ""
                 pm = re.search(r'data-src=["\']([^"\']+)["\']', block) or re.search(r'src=["\']([^"\']+)["\']', block)
                 if pm:
-                    pic = self._fix(pm.group(1).split("?")[0])
+                    pic = self._fix(pm.group(1))
                 items.append({
                     "vod_id": vid,
                     "vod_name": title,
@@ -195,7 +189,7 @@ class Spider(Spider):
         pic = ""
         pm = re.search(r'hg-web-detail__poster[^>]*>.*?(?:data-src|src)=["\']([^"\']+)["\']', html, re.S)
         if pm:
-            pic = self._fix(pm.group(1).split("?")[0])
+            pic = self._fix(pm.group(1))
 
         desc = ""
         dm = re.search(r'hg-web-detail__desc[^>]*>(.*?)</', html, re.S)
@@ -208,7 +202,6 @@ class Spider(Spider):
             eid = am.group(2)
             eps.append(f"第{eid}集${href}")
         if not eps:
-            # 备用：找播放按钮
             pm = re.search(r'hg-web-detail__play[^>]*href=["\']([^"\']+)["\']', html)
             if pm:
                 eps = [f"第1集${self._fix(pm.group(1))}"]
@@ -241,7 +234,6 @@ class Spider(Spider):
                 try:
                     data = json.loads(mm.group(1))
                     srcs = data.get("epPlaySrcs") or {}
-                    # 尽量取第1集或当前
                     play = srcs.get("1") or data.get("videoSrc") or ""
                     if not play and srcs:
                         play = list(srcs.values())[0]
