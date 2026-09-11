@@ -1,13 +1,19 @@
 # -*- coding: utf-8 -*-
-# 黄果短剧 - 完整可用版（封面去auth_key + 简介修复）
+# 黄果短剧 - 封面AES解密最终版
 import re
 import sys
 import json
 import time
-from urllib.parse import quote
+from base64 import b64encode, b64decode
+from urllib.parse import quote, unquote
 
 sys.path.append('..')
 from base.spider import Spider
+
+try:
+    from Crypto.Cipher import AES as _AES
+except Exception:
+    _AES = None
 
 class Spider(Spider):
     def getName(self):
@@ -33,6 +39,9 @@ class Spider(Spider):
             {"type_id": "ai-mogai", "type_name": "AI魔改"},
             {"type_id": "ranks/hot", "type_name": "排行榜"},
         ]
+        # 图片AES密钥（站点前端 crypto-worker.js）
+        self._IMG_KEY = bytes([102, 53, 100, 57, 54, 53, 100, 102, 55, 53, 51, 51, 54, 50, 55, 48])
+        self._IMG_IV = bytes([57, 55, 98, 54, 48, 51, 57, 52, 97, 98, 99, 50, 102, 98, 101, 49])
 
     def _fetch(self, url, referer=None):
         headers = dict(self.headers)
@@ -49,6 +58,22 @@ class Spider(Spider):
             except Exception:
                 time.sleep(0.5)
         return ""
+
+    def _get_bin(self, url):
+        headers = dict(self.headers)
+        headers["Referer"] = self.host + "/"
+        headers["Accept"] = "image/webp,image/apng,image/*,*/*;q=0.8"
+        for _ in range(2):
+            try:
+                r = self.fetch(url, headers=headers, timeout=15, verify=False)
+                if r is None:
+                    continue
+                content = r.content if hasattr(r, "content") else None
+                if content and len(content) > 100:
+                    return content
+            except Exception:
+                time.sleep(0.4)
+        return None
 
     def _get_html(self, path):
         for h in self.hosts:
@@ -75,16 +100,35 @@ class Spider(Spider):
         s = re.sub(r'\s+', ' ', s).strip()
         return s
 
-    def _pic(self, raw):
-        """去掉 auth_key，返回干净直链"""
-        if not raw:
+    def _decrypt_img(self, raw):
+        if not raw or _AES is None:
+            return raw
+        if len(raw) % 16 != 0:
+            return raw
+        try:
+            pt = _AES.new(self._IMG_KEY, _AES.MODE_CBC, self._IMG_IV).decrypt(raw)
+        except Exception:
+            return raw
+        # 校验是否解密成图片
+        if not (pt[:2] == b"\xff\xd8" or pt[:8] == b"\x89PNG\r\n\x1a\n"
+                or pt[:4] == b"RIFF" or pt[:6] in (b"GIF87a", b"GIF89a")):
+            return raw
+        pad = pt[-1]
+        if 0 < pad <= 16 and pt[-pad:] == bytes([pad]) * pad:
+            pt = pt[:-pad]
+        return pt
+
+    def _proxy_pic(self, u):
+        """走本地代理 + AES解密"""
+        u = self._fix(u or "")
+        if not u or "placeholder" in u or "data:image" in u:
             return ""
-        u = self._fix(raw)
-        if "?" in u:
-            u = u.split("?")[0]
-        if "placeholder" in u or "data:image" in u:
-            return ""
-        return u
+        # 保留完整url（含auth_key更稳）
+        try:
+            enc = quote(b64encode(u.encode("utf-8")).decode("utf-8"), safe="")
+            return f"{self.getProxyUrl()}&url={enc}&type=img"
+        except Exception:
+            return u
 
     def _parse_cards(self, html):
         if not html:
@@ -121,7 +165,7 @@ class Spider(Spider):
                 if not pm:
                     pm = re.search(r'src=["\'](https?://[^"\']+\.(?:jpg|jpeg|png|webp)[^"\']*)["\']', block, re.I)
                 if pm:
-                    pic = self._pic(pm.group(1))
+                    pic = self._proxy_pic(pm.group(1))
 
                 rem = ""
                 rm = re.search(r'hg-drama-card__episode[^>]*>([\s\S]*?)</', block)
@@ -172,7 +216,7 @@ class Spider(Spider):
                 pic = ""
                 pm = re.search(r'data-src=["\'](https?://[^"\']+)["\']', block) or re.search(r'src=["\'](https?://[^"\']+)["\']', block)
                 if pm:
-                    pic = self._pic(pm.group(1))
+                    pic = self._proxy_pic(pm.group(1))
                 items.append({
                     "vod_id": vid,
                     "vod_name": title,
@@ -224,7 +268,7 @@ class Spider(Spider):
         ]:
             pm = re.search(pat, html, re.I)
             if pm:
-                pic = self._pic(pm.group(1))
+                pic = self._proxy_pic(pm.group(1))
                 if pic:
                     break
 
@@ -295,7 +339,32 @@ class Spider(Spider):
         }
 
     def localProxy(self, param):
-        return None
+        """图片代理：下载 + AES解密后返回真正图片"""
+        try:
+            url = param.get("url") or ""
+            if not url:
+                return [404, "text/plain", b""]
+            try:
+                url = b64decode(unquote(url)).decode("utf-8")
+            except Exception:
+                pass
+            raw = self._get_bin(url)
+            if not raw:
+                return [404, "text/plain", b""]
+            data = self._decrypt_img(raw)
+            if data[:8] == b"\x89PNG\r\n\x1a\n":
+                ctype = "image/png"
+            elif data[:2] == b"\xff\xd8":
+                ctype = "image/jpeg"
+            elif data[:4] == b"RIFF":
+                ctype = "image/webp"
+            elif data[:6] in (b"GIF87a", b"GIF89a"):
+                ctype = "image/gif"
+            else:
+                ctype = "image/jpeg"
+            return [200, ctype, data]
+        except Exception:
+            return [404, "text/plain", b""]
 
     def isVideoFormat(self, url):
         return True
