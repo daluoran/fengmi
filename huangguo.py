@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# 黄果短剧 - 标题修复 + 封面仍走解密代理
+# 黄果短剧 - 推荐仅短剧 + 新域名
 import re
 import sys
 import json
@@ -22,6 +22,7 @@ class Spider(Spider):
     def init(self, extend=""):
         self.hosts = [
             "https://oimjl.mvbessfgf.cc",
+            "https://14a.bhefwntk.cc",
         ]
         self.host = self.hosts[0]
         self.headers = {
@@ -79,7 +80,7 @@ class Spider(Spider):
             self.host = h
             url = path if path.startswith("http") else (h + path)
             html = self._fetch(url)
-            if html and ("/detail/" in html):
+            if html and ("/detail/" in html or "hg-drama-card" in html):
                 return html
         return ""
 
@@ -123,18 +124,15 @@ class Spider(Spider):
             return u
 
     def _parse_cards(self, html):
-        """只解析真正的 hg-drama-card，跳过热搜/广告链接"""
         if not html:
             return []
         items = []
         seen = set()
-
-        # 按真正的卡片块切割（带 class 的 div）
         for m in re.finditer(r'<div class="hg-drama-card"[^>]*>', html):
             start = m.start()
-            # 取卡片后约 1200 字符作为上下文
             chunk = html[start:start + 1200]
-
+            if "hg-search-suggest" in chunk or "hot-item" in chunk:
+                continue
             mid = re.search(r'/detail/(\d+)/', chunk)
             if not mid:
                 continue
@@ -142,8 +140,6 @@ class Spider(Spider):
             if vid in seen:
                 continue
             seen.add(vid)
-
-            # 标题：alt > title 链接文字
             title = ""
             am = re.search(r'alt=["\']([^"\']{1,80})["\']', chunk)
             if am:
@@ -153,15 +149,11 @@ class Spider(Spider):
                 if tm:
                     title = self._clean(tm.group(1))
             if not title:
-                continue  # 没有标题的直接跳过，不再生成「剧集xxx」
-
-            # 封面
+                continue
             pic = ""
             pm = re.search(r'data-src=["\'](https?://[^"\']+)["\']', chunk)
             if pm:
                 pic = self._proxy_pic(pm.group(1))
-
-            # 备注
             rem = ""
             rm = re.search(r'hg-drama-card__episode[^>]*>[\s\S]*?((?:更新至|全)\d+集)', chunk)
             if rm:
@@ -170,7 +162,6 @@ class Spider(Spider):
             if sm:
                 score = sm.group(1)
                 rem = f"{rem} · {score}" if rem else score
-
             items.append({
                 "vod_id": vid,
                 "vod_name": title,
@@ -183,11 +174,12 @@ class Spider(Spider):
         return self._parse_cards(html)
 
     def homeContent(self, filter):
-        html = self._get_html("/")
+        # 方案A：推荐只显示 AI 成人短剧
+        html = self._get_html("/ai-duanju/")
         return {"class": self.categories, "list": self._parse_cards(html), "filters": {}}
 
     def homeVideoContent(self):
-        html = self._get_html("/")
+        html = self._get_html("/ai-duanju/")
         return {"list": self._parse_cards(html)}
 
     def categoryContent(self, tid, pg, filter, extend):
@@ -204,14 +196,12 @@ class Spider(Spider):
         result = {"list": []}
         if not html:
             return result
-
         name = ""
         m = re.search(r'<h1[^>]*>([\s\S]*?)</h1>', html)
         if m:
             name = self._clean(m.group(1))
         if not name:
             return result
-
         pic = ""
         for pat in [
             r'property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']',
@@ -222,7 +212,6 @@ class Spider(Spider):
                 pic = self._proxy_pic(pm.group(1))
                 if pic:
                     break
-
         desc = ""
         for pat in [
             r'property=["\']og:description["\'][^>]*content=["\']([^"\']+)["\']',
@@ -233,7 +222,6 @@ class Spider(Spider):
                 desc = self._clean(dm.group(1))
                 if len(desc) > 10:
                     break
-
         eps = []
         for am in re.finditer(r'<a[^>]*href=["\']([^"\']+)["\'][^>]*data-ep-id=["\']?(\d+)', html):
             href = self._fix(am.group(1))
@@ -245,7 +233,6 @@ class Spider(Spider):
                 eps = [f"第1集${self._fix(pm.group(1))}"]
         if not eps:
             return result
-
         result["list"].append({
             "vod_id": vid,
             "vod_name": name,
@@ -270,9 +257,17 @@ class Spider(Spider):
                 try:
                     data = json.loads(mm.group(1))
                     srcs = data.get("epPlaySrcs") or {}
-                    play = srcs.get("1") or data.get("videoSrc") or ""
+                    ep = "1"
+                    m_ep = re.search(r'/ep-(\d+)/?', url)
+                    if m_ep:
+                        ep = m_ep.group(1)
+                    else:
+                        cur = data.get("ep")
+                        if cur is not None:
+                            ep = str(cur)
+                    play = srcs.get(ep) or data.get("videoSrc") or ""
                     if not play and srcs:
-                        play = list(srcs.values())[0]
+                        play = srcs.get(ep) or list(srcs.values())[0]
                 except Exception:
                     pass
         if play:
