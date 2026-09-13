@@ -23,16 +23,6 @@
         "type": "rect",
         "ratio": 0.68
       }
-    },
-    {
-      "key": "py_jable",
-      "name": "Jable[py]",
-      "type": 3,
-      "api": "https://gh-proxy.com/https://raw.githubusercontent.com/daluoran/fengmi/refs/heads/main/jable.py",
-      "searchable": 1,
-      "quickSearch": 1,
-      "filterable": 0,
-      "ext": ""
     }
   ]
 }
