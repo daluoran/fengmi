@@ -1,140 +1,178 @@
-import sys, re, requests
+# -*- coding: utf-8 -*-
+# Jable - 影视仓/蜂蜜用（需能访问站点；无法内置WebView过CF）
+import re
+import sys
 from urllib.parse import quote
-from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.util.retry import Retry
+
+sys.path.append("..")
 from base.spider import Spider
 
-requests.packages.urllib3.disable_warnings()
-
 class Spider(Spider):
-    def getName(self): return "Jable"
+    def getName(self):
+        return "Jable"
 
     def init(self, extend=""):
-        self.siteUrl = "https://jable.tv"
+        # 多镜像：哪个通就用哪个（和阅读源思路类似）
+        self.hosts = [
+            "https://jable.tv",
+            "https://jable.com",
+        ]
+        self.host = self.hosts[0]
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "User-Agent": "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Referer": "https://jable.tv/",
-            "Connection": "keep-alive",
+            "Referer": self.host + "/",
         }
-        self.sess = requests.Session()
-        self.sess.mount('https://', HTTPAdapter(max_retries=Retry(total=3, status_forcelist=[500, 502, 503, 504])))
 
-    def fetch(self, url):
-        try: return self.sess.get(url, headers=self.headers, timeout=15, verify=False)
-        except: return None
+    def _get(self, url):
+        for h in self.hosts:
+            try:
+                if url.startswith("http"):
+                    u = url
+                else:
+                    u = h + url
+                r = self.fetch(u, headers={**self.headers, "Referer": h + "/"}, timeout=20, verify=False)
+                if r is None:
+                    continue
+                text = r.text if hasattr(r, "text") else str(r)
+                # CF 拦截页
+                if "cf_chl" in text or "Just a moment" in text or "Checking your browser" in text:
+                    continue
+                if "video-img-box" in text or "/videos/" in text or "hlsUrl" in text:
+                    self.host = h
+                    return text
+            except Exception:
+                continue
+        return ""
 
     def homeContent(self, filter):
-        r = self.fetch(self.siteUrl)
-        cats = []
-        if r and r.ok:
-            # 修复优化：放弃失效的 class="tag"，改为直接抓取带有 categories/tags/hot 等真实路径的 A 标签
-            pattern = r'href=["\'](?:https://jable\.tv)?/((?:categories|tags)/[^"\'/]+|latest-updates|hot)/?["\'][^>]*>(.*?)</a>'
-            for m in re.finditer(pattern, r.text, re.I):
-                tid = m.group(1).strip('/')
-                name = re.sub(r'<[^>]+>', '', m.group(2)).strip()
-                
-                # 过滤掉空值及重复项，确保抓取到的分类合法
-                if tid and name and len(name) > 0 and not name.isspace() and tid not in [c['type_id'] for c in cats]:
-                    cats.append({"type_id": tid, "type_name": name})
-        
-        # 兜底静态分类优化：增加常用分类，以防极端网络情况下首页解析为空
-        if not cats:
-            cats = [
-                {"type_id": "latest-updates", "type_name": "最近更新"},
-                {"type_id": "hot", "type_name": "热门影片"},
-                {"type_id": "categories/chinese-subtitle", "type_name": "中文字幕"},
-                {"type_id": "categories/uncensored", "type_name": "無碼"},
-                {"type_id": "categories/lesbian", "type_name": "女同"},
-                {"type_id": "categories/creampie", "type_name": "中出"}
-            ]
-        return {'class': cats}
+        classes = [
+            {"type_id": "latest-updates", "type_name": "最近更新"},
+            {"type_id": "hot", "type_name": "热门"},
+            {"type_id": "categories/chinese-subtitle", "type_name": "中文字幕"},
+            {"type_id": "categories/uncensored-leak", "type_name": "无码流出"},
+            {"type_id": "categories/lesbian", "type_name": "女同"},
+            {"type_id": "categories/roleplay", "type_name": "角色剧情"},
+        ]
+        return {"class": classes, "filters": {}}
 
     def homeVideoContent(self):
-        return self.postList(self.siteUrl, 1)
+        return self._list(self._get("/latest-updates/"))
 
     def categoryContent(self, tid, pg, filter, extend):
-        url = f"{self.siteUrl}/{tid}/{pg}/" if str(pg) != '1' else f"{self.siteUrl}/{tid}/"
-        return self.postList(url, int(pg))
+        pg = int(pg or 1)
+        tid = str(tid).strip("/")
+        path = f"/{tid}/" if pg == 1 else f"/{tid}/{pg}/"
+        return {
+            "page": pg,
+            "pagecount": 9999,
+            "limit": 24,
+            "total": 99999,
+            "list": self._list(self._get(path)).get("list", []),
+        }
 
-    def searchContent(self, key, quick, pg=1):
-        key = quote(key)
-        url = f"{self.siteUrl}/search/{key}/{pg}/" if str(pg) != '1' else f"{self.siteUrl}/search/{key}/"
-        return self.postList(url, int(pg))
+    def searchContent(self, key, quick, pg="1"):
+        pg = int(pg or 1)
+        q = quote(key)
+        path = f"/search/{q}/" if pg == 1 else f"/search/{q}/{pg}/"
+        return self._list(self._get(path))
 
-    def postList(self, url, pg):
-        r = self.fetch(url)
-        l = []
-        if r and r.ok:
-            blocks = r.text.split('<div class="video-img-box')[1:]
-            for block in blocks:
-                try:
-                    href_match = re.search(r'href=["\']([^"\']+/videos/[^"\']+)["\']', block)
-                    if not href_match: continue
-                    u = href_match.group(1)
-
-                    title_match = re.search(r'<h6 class="title"[^>]*>\s*<a[^>]*>(.*?)</a>', block, re.S)
-                    t = re.sub(r'<[^>]+>', '', title_match.group(1)).strip() if title_match else "未知"
-
-                    pic_match = re.search(r'data-src=["\']([^"\']+)["\']', block) or re.search(r'src=["\']([^"\']+)["\']', block)
-                    p = pic_match.group(1) if pic_match else ""
-
-                    u = u if u.startswith("http") else f"{self.siteUrl}/{u.lstrip('/')}"
-                    
-                    l.append({
-                        'vod_id': f"{u}@@@{t}@@@{p}",
-                        'vod_name': t,
-                        'vod_pic': p,
-                        'vod_remarks': '1080P',
-                        'style': {"type": "rect", "ratio": 1.33}
-                    })
-                except Exception:
+    def _list(self, html):
+        items = []
+        if not html:
+            return {"list": items}
+        blocks = html.split("video-img-box")[1:]
+        seen = set()
+        for block in blocks:
+            try:
+                m = re.search(r'href=["\']([^"\']*?/videos/[^"\']+)["\']', block)
+                if not m:
                     continue
-        return {'list': l, 'page': pg, 'pagecount': pg + 1 if len(l) else pg, 'limit': 24, 'total': 9999}
+                href = m.group(1)
+                if not href.startswith("http"):
+                    href = self.host + href
+                vid = href.rstrip("/").split("/")[-1] or href
+                if vid in seen:
+                    continue
+                seen.add(vid)
+                tm = re.search(r'<h6[^>]*>\s*<a[^>]*>([\s\S]*?)</a>', block)
+                title = re.sub(r"<[^>]+>", "", tm.group(1)).strip() if tm else vid
+                pm = re.search(r'data-src=["\']([^"\']+)["\']', block) or re.search(
+                    r'src=["\']([^"\']+)["\']', block
+                )
+                pic = pm.group(1) if pm else ""
+                if pic.startswith("//"):
+                    pic = "https:" + pic
+                rem = ""
+                rm = re.search(r'class="[^"]*label[^"]*"[^>]*>([\s\S]*?)<', block)
+                if rm:
+                    rem = re.sub(r"<[^>]+>", "", rm.group(1)).strip()
+                items.append(
+                    {
+                        "vod_id": href,
+                        "vod_name": title,
+                        "vod_pic": pic,
+                        "vod_remarks": rem,
+                    }
+                )
+            except Exception:
+                continue
+        return {"list": items}
 
     def detailContent(self, ids):
-        vid = ids[0]
-        name, pic = "未知", ""
-        
-        if "@@@" in vid:
-            parts = vid.split("@@@")
-            vid = parts[0]
-            name = parts[1] if len(parts) > 1 else name
-            pic = parts[2] if len(parts) > 2 else pic
-
-        r = self.fetch(vid)
-        m3u8_url = ""
-        if r and r.ok:
-            m_m3u8 = re.search(r"https?://[^\s'\" ]+\.m3u8", r.text)
-            if m_m3u8: m3u8_url = m_m3u8.group(0)
-
-        vod = {
-            'vod_id': ids[0],
-            'vod_name': name,
-            'vod_pic': pic,
-            'type_name': '视频',
-            'vod_play_from': 'Jable',
-            'vod_play_url': f"播放${m3u8_url}" if m3u8_url else ""
-        }
-        return {'list': [vod]}
+        url = ids[0]
+        if not url.startswith("http"):
+            url = self.host + url
+        html = self._get(url)
+        result = {"list": []}
+        if not html:
+            return result
+        name = ""
+        m = re.search(r"<h4[^>]*>([\s\S]*?)</h4>", html)
+        if m:
+            name = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+        if not name:
+            m = re.search(r"<title>([^<]+)</title>", html)
+            name = m.group(1).strip() if m else "Jable"
+        pic = ""
+        pm = re.search(r'og:image["\'][^>]*content=["\']([^"\']+)["\']', html)
+        if pm:
+            pic = pm.group(1)
+        # 播放：页面里的 hlsUrl
+        play = ""
+        hm = re.search(r"hlsUrl\s*=\s*['\"]([^'\"]+)['\"]", html)
+        if hm:
+            play = hm.group(1).replace("\\u0026", "&")
+        if not play:
+            return result
+        result["list"].append(
+            {
+                "vod_id": url,
+                "vod_name": name,
+                "vod_pic": pic,
+                "vod_play_from": "Jable",
+                "vod_play_url": f"正片${play}",
+            }
+        )
+        return result
 
     def playerContent(self, flag, id, vipFlags):
+        # id 已是 m3u8
         return {
-            "parse": 0, 
-            "url": id, 
+            "parse": 0,
+            "url": id,
             "header": {
-                "Referer": "https://jable.tv/",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            }
+                "User-Agent": self.headers["User-Agent"],
+                "Referer": self.host + "/",
+            },
         }
 
+    def isVideoFormat(self, url):
+        return True
 
-    def localProxy(self, param): pass
+    def manualVideoCheck(self):
+        pass
 
-    def isVideoFormat(self, url): return True
-
-    def manualVideoCheck(self): pass
-
-    def destroy(self): pass
+    def destroy(self):
+        pass
