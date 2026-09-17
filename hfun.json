@@ -24,5 +24,17 @@
         "ratio": 0.68
       }
     }
+    {
+      "key": "1",
+      "name": "🔞火速",
+      "type": 1,
+      "api": "https://api.huosuapi.cc/api.php/provide/vod/?ac=videolist"
+    },
+    {
+      "key": "2",
+      "name": "🔞嘿嘿",
+      "type": 1,
+      "api": "https://api.heiapi.cc/api.php/provide/vod/?ac=videolist"
+    }
   ]
 }
