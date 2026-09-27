@@ -21,8 +21,8 @@ class Spider(Spider):
 
     def init(self, extend=""):
         self.hosts = [
-            "https://ea2ioe.mbdjkget.cc",
-            "https://aonfna.mbdjkget.cc",
+            "https://jf4cva.fejivxks.cc",
+            "https://ggua.fejivxks.cc",
         ]
         self.host = self.hosts[0]
         self.headers = {
