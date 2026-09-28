@@ -48,8 +48,8 @@ class Spider(BaseSpider):
     def init(self, extend=""):
         self.host = "https://huangguoai.com"
         self.hosts = [
-            "https://mhtl9n.hwqlgzvsk.cc",
-            "https://ggua.fejivxks.cc",
+            "https://n79o.hwqlgzvsk.cc",
+            "https://ebzj.hwqlgzvsk.cc",
         ]
         self.ua = (
             "Mozilla/5.0 (Linux; Android 13; Mobile) "
