@@ -46,10 +46,7 @@ class Spider(BaseSpider):
         return "黄果短剧"
 
     def init(self, extend=""):
-        self.hosts = [
-            "https://n79o.hwqlgzvsk.cc",
-            "https://ebzj.hwqlgzvsk.cc",
-        ]
+        self.hosts = "https://n79o.hwqlgzvsk.cc"
         self.ua = (
             "Mozilla/5.0 (Linux; Android 13; Mobile) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
