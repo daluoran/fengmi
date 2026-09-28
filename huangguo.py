@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-# 黄果短剧 - 适配当前站点 (API优先 + HTML回退)
-# 主站: https://huangguoai.com
+# 黄果短剧 - OK影视/FongMi 兼容版
+# 主站 API: https://huangguoai.com
 import re
 import sys
 import json
@@ -9,7 +9,28 @@ from base64 import b64encode, b64decode
 from urllib.parse import quote, unquote
 
 sys.path.append("..")
-from base.spider import Spider
+try:
+    from base.spider import Spider as BaseSpider
+except Exception:
+    class BaseSpider(object):
+        def fetch(self, url, headers=None, timeout=15, verify=False, **kw):
+            import urllib.request
+            req = urllib.request.Request(url, headers=headers or {})
+            try:
+                import ssl
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                resp = urllib.request.urlopen(req, timeout=timeout, context=ctx)
+            except Exception:
+                resp = urllib.request.urlopen(req, timeout=timeout)
+            class R:
+                pass
+            r = R()
+            r.content = resp.read()
+            r.text = r.content.decode("utf-8", errors="ignore")
+            r.status_code = getattr(resp, "status", 200)
+            return r
 
 try:
     from Crypto.Cipher import AES as _AES
@@ -19,13 +40,8 @@ except Exception:
     except Exception:
         _AES = None
 
-try:
-    from lxml import etree
-except Exception:
-    etree = None
 
-
-class Spider(Spider):
+class Spider(BaseSpider):
     def getName(self):
         return "黄果短剧"
 
@@ -36,16 +52,17 @@ class Spider(Spider):
             "https://mhtl9n.hwqlgzvsk.cc",
             "https://v7u6.fejivxks.cc",
             "https://ro6o3.fejivxks.cc",
+            "https://eoeib.fejivxks.cc",
         ]
         self.ua = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "Mozilla/5.0 (Linux; Android 13; Mobile) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
+            "Chrome/120.0.0.0 Mobile Safari/537.36"
         )
         self.headers = {
             "User-Agent": self.ua,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Accept": "application/json, text/html, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9",
             "Connection": "keep-alive",
         }
         self.categories = [
@@ -77,41 +94,107 @@ class Spider(Spider):
                 {"n": "随机推荐", "v": "random"},
             ]}],
         }
-        # AES-128-CBC 封面解密密钥
         self._IMG_KEY = bytes([102, 53, 100, 57, 54, 53, 100, 102, 55, 53, 51, 51, 54, 50, 55, 48])
         self._IMG_IV = bytes([57, 55, 98, 54, 48, 51, 57, 52, 97, 98, 99, 50, 102, 98, 101, 49])
+        self._alive_host = None
 
-    # ---------- 基础请求 ----------
     def _hdr(self, referer=None):
         h = dict(self.headers)
         h["Referer"] = (referer or self.host) + "/"
         return h
 
+    def _raw_get(self, url, headers=None, timeout=15):
+        headers = headers or self._hdr()
+        try:
+            r = self.fetch(url, headers=headers, timeout=timeout, verify=False)
+            if r is not None:
+                return r
+        except Exception:
+            pass
+        try:
+            import requests
+            return requests.get(url, headers=headers, timeout=timeout, verify=False)
+        except Exception:
+            pass
+        try:
+            import urllib.request
+            import ssl
+            req = urllib.request.Request(url, headers=headers)
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            resp = urllib.request.urlopen(req, timeout=timeout, context=ctx)
+            class R:
+                pass
+            out = R()
+            out.content = resp.read()
+            out.text = out.content.decode("utf-8", errors="ignore")
+            out.status_code = 200
+            return out
+        except Exception:
+            return None
+
+    def _text(self, r):
+        if r is None:
+            return ""
+        if hasattr(r, "text") and r.text:
+            return r.text
+        if hasattr(r, "content") and r.content:
+            try:
+                return r.content.decode("utf-8", errors="ignore")
+            except Exception:
+                return str(r.content)
+        return str(r)
+
+    def _json(self, r):
+        try:
+            if hasattr(r, "json"):
+                return r.json()
+            return json.loads(self._text(r))
+        except Exception:
+            return {}
+
+    def _pick_host(self):
+        if self._alive_host:
+            return self._alive_host
+        for h in self.hosts:
+            try:
+                r = self._raw_get(
+                    h + "/api/videos/category/ai-duanju?page=1&size=1&sort=latest",
+                    timeout=10,
+                )
+                data = self._json(r)
+                if isinstance(data, dict) and data.get("data"):
+                    self._alive_host = h
+                    self.host = h
+                    return h
+            except Exception:
+                continue
+        self._alive_host = self.hosts[0]
+        self.host = self._alive_host
+        return self.host
+
     def _fetch(self, url, referer=None, asjson=False, raw=False):
         fail = {} if asjson else (b"" if raw else "")
         if not url:
             return fail
-        for _ in range(3):
+        if url.startswith("/"):
+            url = self._pick_host() + url
+        for _ in range(2):
             try:
-                r = self.fetch(url, headers=self._hdr(referer), timeout=18, verify=False)
+                r = self._raw_get(url, headers=self._hdr(referer), timeout=18)
                 if r is None:
-                    time.sleep(0.4)
+                    time.sleep(0.3)
                     continue
                 if asjson:
-                    try:
-                        if hasattr(r, "json"):
-                            return r.json()
-                        text = r.text if hasattr(r, "text") else str(r)
-                        return json.loads(text)
-                    except Exception:
-                        return {}
+                    return self._json(r)
                 if raw:
                     return r.content if hasattr(r, "content") else b""
-                text = r.text if hasattr(r, "text") else str(r)
-                if text and len(text) > 100:
+                text = self._text(r)
+                if text and len(text) > 50:
                     return text
             except Exception:
-                time.sleep(0.4)
+                time.sleep(0.3)
         return fail
 
     def _get_bin(self, url):
@@ -126,11 +209,6 @@ class Spider(Spider):
             return self.host + u
         return u
 
-    def _clean(self, s):
-        if not s:
-            return ""
-        return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", s)).strip()
-
     def _img_src(self, u):
         u = self._fix(u or "")
         if u.startswith("http") and "?" in u:
@@ -143,7 +221,13 @@ class Spider(Spider):
             return ""
         try:
             enc = quote(b64encode(u.encode("utf-8")).decode("utf-8"), safe="")
-            return f"{self.getProxyUrl()}&url={enc}&type=img"
+            try:
+                proxy = self.getProxyUrl()
+                if proxy:
+                    return f"{proxy}&url={enc}&type=img"
+            except Exception:
+                pass
+            return u
         except Exception:
             return u
 
@@ -164,28 +248,20 @@ class Spider(Spider):
         pad = pt[-1]
         if 0 < pad <= 16 and pt[-pad:] == bytes([pad]) * pad:
             pt = pt[:-pad]
-        if pt[:2] == b"\xff\xd8":
-            i = pt.rfind(b"\xff\xd9")
-            if i >= 0:
-                pt = pt[: i + 2]
-        elif pt[:8] == b"\x89PNG\r\n\x1a\n":
-            i = pt.rfind(b"IEND")
-            if i >= 0:
-                pt = pt[: i + 8]
         return pt
 
     def _img_ct(self, data):
+        if not data:
+            return "image/jpeg"
         if data[:8] == b"\x89PNG\r\n\x1a\n":
             return "image/png"
         if data[:4] == b"RIFF" and len(data) > 12 and data[8:12] == b"WEBP":
             return "image/webp"
-        if data[:6] in (b"GIF87a", b"GIF89a"):
-            return "image/gif"
         return "image/jpeg"
 
-    # ---------- API ----------
     def _api_items(self, path):
-        data = self._fetch(self.host + path, asjson=True)
+        host = self._pick_host()
+        data = self._fetch(host + path, asjson=True)
         if not isinstance(data, dict):
             return None, None
         body = data.get("data")
@@ -235,278 +311,252 @@ class Spider(Spider):
             "vod_remarks": remarks,
         }
 
-    def _api_rank_item(self, item):
-        vid = str(item.get("video_id") or item.get("id") or "")
-        if not vid:
-            return None
-        try:
-            rank = item.get("rank")
-            label = item.get("metric_label") or ""
-            value = item.get("metric_value")
-            remarks = ("#%s %s%s" % (rank, label, value)).strip() if rank else ""
-        except Exception:
-            remarks = ""
-        if not remarks:
-            remarks = self._api_remarks(item)
+    def _list_from_api(self, tid, pg=1, sort="latest", size=24):
+        path = "/api/videos/category/%s?page=%d&size=%d&sort=%s" % (tid, pg, size, sort)
+        items, pag = self._api_items(path)
+        lst = []
+        if items:
+            for it in items:
+                v = self._api_video_item(it)
+                if v:
+                    lst.append(v)
+        pages = 1
+        total = len(lst)
+        if pag:
+            try:
+                pages = int(pag.get("pages") or 1)
+                total = int(pag.get("total") or total)
+            except Exception:
+                pages = pg + 1 if lst else pg
+        elif lst:
+            pages = pg + 1
         return {
-            "vod_id": vid,
-            "vod_name": item.get("title") or "",
-            "vod_pic": self._proxy_pic(item.get("cover") or ""),
-            "vod_remarks": remarks,
+            "list": lst,
+            "page": pg,
+            "pagecount": max(pages, 1),
+            "limit": size,
+            "total": total or 99999,
         }
 
-    # ---------- HTML 卡片解析 (回退) ----------
     def _parse_cards_html(self, html):
         if not html:
             return []
         items, seen = [], set()
-        # 新结构: /video/ID/
         for m in re.finditer(
-            r'href=["\'](/video/(\d+)/?)["\'][^>]*>[\s\S]{0,800}?(?:data-src|src)=["\'](https?://[^"\']+)["\']',
+            r'href=["\'](?:https?://[^"\']+)?(/video/(\d+)/?)["\']',
             html,
             re.I,
         ):
-            vid, pic = m.group(2), m.group(3)
+            vid = m.group(2)
             if vid in seen:
                 continue
-            chunk = html[max(0, m.start() - 200) : m.start() + 1200]
+            start = max(0, m.start() - 100)
+            chunk = html[start : m.start() + 1500]
             title = ""
-            tm = re.search(r"(?:alt|title)=[\"']([^\"']{2,80})[\"']", chunk)
-            if tm:
-                title = self._clean(tm.group(1))
-            if not title:
-                tm2 = re.search(r"<h[23][^>]*>([\s\S]*?)</h[23]>", chunk)
-                if tm2:
-                    title = self._clean(tm2.group(1))
+            for pat in (
+                r'(?:alt|title)=["\']([^"\']{2,100})["\']',
+                r"<h[123][^>]*>([\s\S]*?)</h[123]>",
+            ):
+                tm = re.search(pat, chunk, re.I)
+                if tm:
+                    title = re.sub(r"<[^>]+>", "", tm.group(1)).strip()
+                    title = re.sub(r"\s+", " ", title)
+                    if len(title) >= 2:
+                        break
             if not title:
                 continue
             seen.add(vid)
+            pic = ""
+            pm = re.search(r'(?:data-src|src)=["\'](https?://[^"\']+)["\']', chunk)
+            if pm:
+                pic = self._proxy_pic(pm.group(1))
             rem = ""
             rm = re.search(r"((?:更新至|全)\d+集)", chunk)
             if rm:
                 rem = rm.group(1)
-            sm = re.search(r"([\d.]+)\s*分", chunk)
-            if sm:
-                rem = (rem + " · " + sm.group(1) + "分") if rem else (sm.group(1) + "分")
             items.append({
                 "vod_id": vid,
                 "vod_name": title,
-                "vod_pic": self._proxy_pic(pic),
+                "vod_pic": pic,
                 "vod_remarks": rem,
             })
-        if items:
-            return items
-        # 旧结构: hg-drama-card + /detail/
-        if etree is not None:
-            try:
-                tree = etree.HTML(html)
-                nodes = tree.xpath('//*[contains(@class,"hg-drama-card")]')
-                for card in nodes:
-                    a = card.xpath('.//a[contains(@href,"/detail/") or contains(@href,"/video/")]')
-                    if not a:
-                        continue
-                    href = a[0].get("href", "")
-                    m = re.search(r"/(?:detail|video)/(\d+)/?", href)
-                    if not m or m.group(1) in seen:
-                        continue
-                    img = (card.xpath(".//img/@data-src") or card.xpath(".//img/@src") or [""])[0]
-                    title = "".join(
-                        card.xpath('.//*[contains(@class,"hg-drama-card__title")]//text()')
-                    ).strip()
-                    if not title:
-                        title = a[0].get("title", "").strip()
-                    if not title:
-                        continue
-                    seen.add(m.group(1))
-                    rem = "".join(
-                        card.xpath('.//*[contains(@class,"hg-drama-card__episode")]//text()')
-                    ).strip()
-                    score = "".join(
-                        card.xpath('.//*[contains(@class,"hg-drama-card__score")]//text()')
-                    ).strip()
-                    if rem and score:
-                        rem = rem + " · " + score
-                    elif not rem:
-                        rem = score
-                    items.append({
-                        "vod_id": m.group(1),
-                        "vod_name": title,
-                        "vod_pic": self._proxy_pic(img),
-                        "vod_remarks": rem,
-                    })
-            except Exception:
-                pass
         return items
 
-    # ---------- 入口 ----------
     def homeContent(self, filter):
-        return {"class": self.categories, "filters": self.filters, "list": []}
+        result = {"class": self.categories, "filters": self.filters, "list": []}
+        try:
+            data = self._list_from_api("ai-duanju", 1, "latest", 24)
+            result["list"] = data.get("list") or []
+        except Exception:
+            pass
+        if not result["list"]:
+            try:
+                html = self._fetch(self._pick_host() + "/ai-duanju/")
+                result["list"] = self._parse_cards_html(html)
+            except Exception:
+                pass
+        return result
 
     def homeVideoContent(self):
-        items, _ = self._api_items("/api/videos/category/ai-duanju?page=1&size=24&sort=latest")
-        if items:
-            vids, seen = [], set()
-            for it in items:
-                v = self._api_video_item(it)
-                if v and v["vod_id"] not in seen:
-                    seen.add(v["vod_id"])
-                    vids.append(v)
-            if vids:
-                return {"list": vids}
-        html = self._fetch(self.host + "/ai-duanju/")
-        return {"list": self._parse_cards_html(html)}
+        try:
+            data = self._list_from_api("ai-duanju", 1, "latest", 24)
+            if data.get("list"):
+                return {"list": data["list"]}
+        except Exception:
+            pass
+        try:
+            html = self._fetch(self._pick_host() + "/ai-duanju/")
+            return {"list": self._parse_cards_html(html)}
+        except Exception:
+            return {"list": []}
 
     def categoryContent(self, tid, pg, filter, extend):
         pg = max(int(pg or 1), 1)
         tid = str(tid or "").strip("/")
         ext = extend if isinstance(extend, dict) else {}
-        sort = ext.get("sort", "latest") or "latest"
+        sort = ext.get("sort") or "latest"
         if sort == "original":
             sort = "hot"
-
-        # 排行榜
-        if tid in ("ranks", "ranks/hot", "rank"):
-            items, pag = self._api_items("/api/ranks/hot?page=%d&size=24" % pg)
-            lst = []
-            if items:
-                for it in items:
-                    v = self._api_rank_item(it)
-                    if v:
-                        lst.append(v)
-            pages = (pag or {}).get("pages") or (pg + 1 if lst else pg)
+        empty = {"list": [], "page": pg, "pagecount": 1, "limit": 24, "total": 0}
+        try:
+            if tid in ("ranks", "ranks/hot", "rank"):
+                items, pag = self._api_items("/api/ranks/hot?page=%d&size=24" % pg)
+                lst = []
+                if items:
+                    for it in items:
+                        v = self._api_video_item(it)
+                        if v:
+                            lst.append(v)
+                pages = (pag or {}).get("pages") or (pg + 1 if lst else 1)
+                return {
+                    "list": lst,
+                    "page": pg,
+                    "pagecount": int(pages),
+                    "limit": 24,
+                    "total": (pag or {}).get("total") or 99999,
+                }
+            data = self._list_from_api(tid, pg, sort, 24)
+            if data.get("list"):
+                return data
+            path = "/%s/" % tid if pg == 1 else "/%s/%d/" % (tid, pg)
+            html = self._fetch(self._pick_host() + path)
+            cards = self._parse_cards_html(html)
             return {
+                "list": cards,
                 "page": pg,
-                "pagecount": int(pages),
+                "pagecount": 9999 if cards else pg,
                 "limit": 24,
-                "total": (pag or {}).get("total") or 99999,
-                "list": lst,
+                "total": 99999,
             }
-
-        # 分类 API
-        path = "/api/videos/category/%s?page=%d&size=24&sort=%s" % (tid, pg, sort)
-        items, pag = self._api_items(path)
-        if items:
-            lst = []
-            for it in items:
-                v = self._api_video_item(it)
-                if v:
-                    lst.append(v)
-            pages = (pag or {}).get("pages") or (pg + 1 if lst else pg)
-            return {
-                "page": pg,
-                "pagecount": int(pages),
-                "limit": 24,
-                "total": (pag or {}).get("total") or 99999,
-                "list": lst,
-            }
-
-        # HTML 回退
-        path_html = "/%s/" % tid if pg == 1 else "/%s/%d/" % (tid, pg)
-        html = self._fetch(self.host + path_html)
-        cards = self._parse_cards_html(html)
-        return {
-            "page": pg,
-            "pagecount": 9999 if cards else pg,
-            "limit": 24,
-            "total": 99999,
-            "list": cards,
-        }
+        except Exception:
+            return empty
 
     def detailContent(self, ids):
         vid = str(ids[0]) if ids else ""
         if not vid:
             return {"list": []}
-        result = {"list": []}
         title, cover, desc = "", "", ""
         episode_count = 0
-
-        # 1) API 详情
-        data = self._fetch(self.host + "/api/videos/detail/" + vid, asjson=True)
-        if isinstance(data, dict) and isinstance(data.get("data"), dict):
-            item = data["data"]
-            title = item.get("title") or ""
-            cover = self._proxy_pic(item.get("cover") or "")
-            desc = item.get("description") or ""
-            try:
-                episode_count = int(item.get("episode_count") or item.get("total_episodes") or 0)
-            except Exception:
-                episode_count = 0
-
-        # 2) HTML 补全标题/封面
+        host = self._pick_host()
+        try:
+            data = self._fetch(host + "/api/videos/detail/" + vid, asjson=True)
+            if isinstance(data, dict) and isinstance(data.get("data"), dict):
+                item = data["data"]
+                title = item.get("title") or ""
+                cover = self._proxy_pic(item.get("cover") or "")
+                desc = item.get("description") or ""
+                try:
+                    episode_count = int(
+                        item.get("episode_count") or item.get("total_episodes") or 0
+                    )
+                except Exception:
+                    episode_count = 0
+        except Exception:
+            pass
         html = ""
-        if not title or not cover:
+        if not title:
             for path in ("/video/%s/" % vid, "/detail/%s/" % vid):
-                html = self._fetch(self.host + path) or ""
+                html = self._fetch(host + path) or ""
                 if html and ("<h1" in html or "og:title" in html):
                     break
             if html:
+                m = re.search(r"<h1[^>]*>([\s\S]*?)</h1>", html)
+                if m:
+                    title = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+                    title = re.sub(r"\s*第\s*\d+\s*集\s*$", "", title).strip()
                 if not title:
-                    m = re.search(r'<h1[^>]*>([\s\S]*?)</h1>', html)
+                    m = re.search(
+                        r'property=["\']og:title["\'][^>]*content=["\']([^"\']+)',
+                        html, re.I,
+                    )
                     if m:
-                        title = re.sub(r"\s*第\s*\d+\s*集\s*$", "", self._clean(m.group(1))).strip()
-                    if not title:
-                        m = re.search(r'property=["\']og:title["\'][^>]*content=["\']([^"\']+)', html, re.I)
-                        if m:
-                            title = self._clean(m.group(1))
+                        title = m.group(1).strip()
                 if not cover:
-                    for pat in (
+                    m = re.search(
                         r'property=["\']og:image["\'][^>]*content=["\'](https?://[^"\']+)',
-                        r'data-src=["\'](https?://[^"\']+)["\']',
-                        r'src=["\'](https?://pic\.[^"\']+)["\']',
-                    ):
-                        pm = re.search(pat, html, re.I)
-                        if pm:
-                            cover = self._proxy_pic(pm.group(1))
-                            break
-                if not desc:
-                    m = re.search(r'property=["\']og:description["\'][^>]*content=["\']([^"\']+)', html, re.I)
+                        html, re.I,
+                    )
                     if m:
-                        desc = self._clean(m.group(1))
-
+                        cover = self._proxy_pic(m.group(1))
+                if not desc:
+                    m = re.search(
+                        r'property=["\']og:description["\'][^>]*content=["\']([^"\']+)',
+                        html, re.I,
+                    )
+                    if m:
+                        desc = m.group(1).strip()
         if not title:
             title = "视频%s" % vid
-
-        # 3) 提取集数播放地址
         ep_srcs = self._extract_sources(vid, episode_count)
         if ep_srcs:
-            segs = ["第%s集$%s" % (ep, src) for ep, src in sorted(ep_srcs.items(), key=lambda x: int(x[0]) if str(x[0]).isdigit() else 0)]
+            segs = [
+                "第%s集$%s" % (ep, src)
+                for ep, src in sorted(
+                    ep_srcs.items(),
+                    key=lambda x: int(x[0]) if str(x[0]).isdigit() else 0,
+                )
+            ]
             play_url = "#".join(segs)
         else:
-            # 最后回退：把详情页当第1集入口，由 playerContent 再解析
-            play_url = "第1集$%s/video/%s/" % (self.host, vid)
-
-        result["list"].append({
-            "vod_id": vid,
-            "vod_name": title,
-            "vod_pic": cover,
-            "vod_content": desc,
-            "vod_play_from": "黄果短剧",
-            "vod_play_url": play_url,
-            "vod_remarks": ("更新至%d集" % episode_count) if episode_count else "",
-        })
-        return result
+            n = max(episode_count, 1)
+            segs = []
+            for i in range(1, n + 1):
+                if i == 1:
+                    segs.append("第1集$%s/video/%s/" % (host, vid))
+                else:
+                    segs.append("第%d集$%s/video/%s/ep-%d/" % (i, host, vid, i))
+            play_url = "#".join(segs)
+        return {
+            "list": [{
+                "vod_id": vid,
+                "vod_name": title,
+                "vod_pic": cover,
+                "vod_content": desc,
+                "vod_play_from": "黄果短剧",
+                "vod_play_url": play_url,
+                "vod_remarks": ("更新至%d集" % episode_count) if episode_count else "",
+            }]
+        }
 
     def _extract_sources(self, vid, max_hint=0):
-        """从 /video/ID/ 与 /video/ID/ep-N/ 提取各集直链"""
         ep_srcs = {}
-        max_check = max(max_hint, 1) + 5
-        if max_check > 80:
-            max_check = 80
-        check_ep = 1
-        while check_ep <= max_check:
-            url = "/video/%s/" % vid if check_ep == 1 else "/video/%s/ep-%d/" % (vid, check_ep)
-            html = self._fetch(self.host + url)
+        host = self._pick_host()
+        max_check = min(max(max_hint, 1) + 3, 40)
+        for check_ep in range(1, max_check + 1):
+            url = (
+                host + "/video/%s/" % vid
+                if check_ep == 1
+                else host + "/video/%s/ep-%d/" % (vid, check_ep)
+            )
+            html = self._fetch(url)
             if not html:
                 if check_ep > 1:
                     break
-                check_ep += 1
                 continue
             found = False
-            # videoInitialData JSON
             mm = re.search(
                 r'<script[^>]*id=["\']videoInitialData["\'][^>]*>([\s\S]*?)</script>',
-                html,
-                re.I,
+                html, re.I,
             )
             if mm:
                 try:
@@ -529,126 +579,91 @@ class Spider(Spider):
                         found = True
                 except Exception:
                     pass
-            # 正则兜底
             if not found:
-                for m in re.finditer(r'"epPlaySrcs"\s*:\s*(\{[^}]+\})', html):
-                    try:
-                        raw = m.group(1).replace("\\u0026", "&")
-                        eps = json.loads(raw)
-                        for ep, src in eps.items():
-                            if src and str(ep) not in ep_srcs:
-                                if str(src).startswith("//"):
-                                    src = "https:" + src
-                                ep_srcs[str(ep)] = str(src)
-                                found = True
-                    except Exception:
-                        pass
-                vs_m = re.search(r'"videoSrc"\s*:\s*"((?:https?:)?//[^"]+)"', html)
-                if vs_m and str(check_ep) not in ep_srcs:
-                    src = vs_m.group(1).replace("\\u0026", "&")
-                    if src.startswith("//"):
-                        src = "https:" + src
-                    ep_srcs[str(check_ep)] = src
-                    found = True
-                m3 = re.search(r'(https?://[^\s"\'<>]+\.(?:m3u8|mp4)[^\s"\'<>]*)', html)
+                m3 = re.search(
+                    r'(https?://[^\s"\'<>]+\.(?:m3u8|mp4)[^\s"\'<>]*)', html
+                )
                 if m3 and str(check_ep) not in ep_srcs:
                     ep_srcs[str(check_ep)] = m3.group(1).replace("\\u0026", "&")
                     found = True
-
-            # 从页面集数链接推断总数
             if check_ep == 1:
-                eids = re.findall(r'data-ep-id=["\']?(\d+)', html)
-                for e in eids:
+                for e in re.findall(r'data-ep-id=["\']?(\d+)', html):
                     try:
                         n = int(e)
                         if n > max_check:
-                            max_check = min(n + 2, 80)
+                            max_check = min(n + 1, 40)
                     except Exception:
                         pass
-                # 集数网格链接
-                for a in re.finditer(r'href=["\']([^"\']*(?:/ep-(\d+)/|/video/\d+/)?)["\'][^>]*data-ep-id=["\']?(\d+)', html):
-                    eid = a.group(3) or a.group(2)
-                    href = self._fix(a.group(1))
-                    if eid and eid not in ep_srcs and href:
-                        # 暂存页面入口，player 再解析
-                        ep_srcs[eid] = href
-
             if not found and check_ep > 1 and str(check_ep) not in ep_srcs:
                 break
-            check_ep += 1
             if check_ep > 1:
-                time.sleep(0.12)
+                time.sleep(0.1)
         return ep_srcs
 
     def searchContent(self, key, quick, pg="1"):
         page = max(int(pg or 1), 1)
         result = {"list": [], "page": page, "pagecount": 1, "limit": 20, "total": 0}
-        url = self.host + "/search/?keyword=%s" % quote(key)
-        if page > 1:
-            url += "&page=%d" % page
-        html = self._fetch(url)
-        if not html:
-            # 备用搜索路径
-            html = self._fetch(self.host + "/search/video/%s/" % quote(key))
-        if not html:
-            return result
-        videos, seen = [], set()
-        for m in re.finditer(r'data-track-id=["\'](\d+)["\']', html):
-            vid = m.group(1)
-            if vid in seen:
-                continue
-            chunk = html[m.start() : m.start() + 900]
-            tm = re.search(r'data-track-title=["\']([^"\']*)["\']', chunk)
-            pm = re.search(r'(?:data-src|src)=["\'](https?://[^"\']+)["\']', chunk)
-            videos.append({
-                "vod_id": vid,
-                "vod_name": tm.group(1) if tm else "",
-                "vod_pic": self._proxy_pic(pm.group(1)) if pm else "",
-                "vod_remarks": "",
-            })
-            seen.add(vid)
-        if not videos:
-            videos = self._parse_cards_html(html)
-        result["list"] = videos
-        pm2 = re.search(r'data-pages=["\'](\d+)["\']', html)
-        tm2 = re.search(r'data-track-search-total=["\'](\d+)["\']', html)
-        if tm2:
-            result["total"] = int(tm2.group(1))
-        result["pagecount"] = int(pm2.group(1)) if pm2 else (page + 1 if len(videos) >= 20 else page)
+        host = self._pick_host()
+        try:
+            url = host + "/search/?keyword=%s" % quote(key)
+            if page > 1:
+                url += "&page=%d" % page
+            html = self._fetch(url)
+            if not html:
+                html = self._fetch(host + "/search/video/%s/" % quote(key))
+            if not html:
+                return result
+            videos, seen = [], set()
+            for m in re.finditer(r'data-track-id=["\'](\d+)["\']', html):
+                vid = m.group(1)
+                if vid in seen:
+                    continue
+                chunk = html[m.start() : m.start() + 900]
+                tm = re.search(r'data-track-title=["\']([^"\']*)["\']', chunk)
+                pm = re.search(
+                    r'(?:data-src|src)=["\'](https?://[^"\']+)["\']', chunk
+                )
+                videos.append({
+                    "vod_id": vid,
+                    "vod_name": tm.group(1) if tm else "",
+                    "vod_pic": self._proxy_pic(pm.group(1)) if pm else "",
+                    "vod_remarks": "",
+                })
+                seen.add(vid)
+            if not videos:
+                videos = self._parse_cards_html(html)
+            result["list"] = videos
+            pm2 = re.search(r'data-pages=["\'](\d+)["\']', html)
+            result["pagecount"] = int(pm2.group(1)) if pm2 else (
+                page + 1 if len(videos) >= 20 else page
+            )
+        except Exception:
+            pass
         return result
 
     def playerContent(self, flag, id, vipFlags):
-        header = {
-            "User-Agent": self.ua,
-            "Referer": self.host + "/",
-        }
+        header = {"User-Agent": self.ua, "Referer": self.host + "/"}
         result = {"parse": 0, "url": "", "header": header}
         raw = str(id or "").strip()
         if not raw:
             return result
-
-        # 已是直链
         if raw.startswith("http") and (".m3u8" in raw or ".mp4" in raw):
             result["url"] = raw
             return result
-
-        # 页面 URL 或纯 ID
         if raw.startswith("http"):
             url = raw
         elif raw.startswith("/"):
             url = self._fix(raw)
         elif raw.isdigit():
-            url = "%s/video/%s/" % (self.host, raw)
+            url = "%s/video/%s/" % (self._pick_host(), raw)
         else:
             url = self._fix(raw)
-
         html = self._fetch(url, referer=self.host)
         play = ""
         if html:
             mm = re.search(
                 r'<script[^>]*id=["\']videoInitialData["\'][^>]*>([\s\S]*?)</script>',
-                html,
-                re.I,
+                html, re.I,
             )
             if mm:
                 try:
@@ -667,10 +682,11 @@ class Spider(Spider):
                     m2 = re.search(r"(https?://[^\s\"']+)", play)
                     play = m2.group(1) if m2 else ""
             if not play:
-                m = re.search(r'(https?://[^\s"\'<>]+\.(?:m3u8|mp4)[^\s"\'<>]*)', html)
+                m = re.search(
+                    r'(https?://[^\s"\'<>]+\.(?:m3u8|mp4)[^\s"\'<>]*)', html
+                )
                 if m:
                     play = m.group(1).replace("\\u0026", "&")
-
         result["url"] = play
         return result
 
@@ -680,7 +696,7 @@ class Spider(Spider):
             if not url:
                 return [404, "text/plain", b""]
             try:
-                url = b64decode(unquote(url)).decode("utf-8")
+                url = b64decode(unquote(str(url))).decode("utf-8")
             except Exception:
                 pass
             url = self._img_src(url)
@@ -697,7 +713,7 @@ class Spider(Spider):
         return ".m3u8" in u or ".mp4" in u or ".flv" in u
 
     def manualVideoCheck(self):
-        pass
+        return False
 
     def destroy(self):
         pass
