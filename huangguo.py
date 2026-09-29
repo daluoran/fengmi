@@ -47,6 +47,10 @@ class Spider(BaseSpider):
 
     def init(self, extend=""):
         self.host = "https://n79o.hwqlgzvsk.cc"
+        self.hosts = [
+        "https://n79o.hwqlgzvsk.cc",
+        "https://ebzj.hwqlgzvsk.cc",
+        ]
         self.ua = (
             "Mozilla/5.0 (Linux; Android 13; Mobile) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
